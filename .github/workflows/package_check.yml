@@ -44,7 +44,13 @@ jobs:
           sudo usermod -a -G lxd "$USER"
 
       - name: Initialise LXD
-        run: sudo lxd init --auto --storage-backend dir
+        run: |
+          set -eux
+          sudo lxd init --auto --storage-backend dir
+          # GitHub-hosted runners ship Docker, whose iptables FORWARD policy is
+          # DROP and blocks the LXD bridge, leaving containers without internet.
+          # Allow forwarding so the test container can reach the network.
+          sudo iptables -P FORWARD ACCEPT || true
 
       - name: Add the YunoHost image remote
         # Added as the runner user (not root) so package_check, which runs as
@@ -53,8 +59,14 @@ jobs:
           sg lxd -c "lxc remote add yunohost https://repo.yunohost.org/incus \
             --protocol simplestreams --public" || true
 
-      - name: Clone package_check
-        run: git clone --depth 1 https://github.com/YunoHost/package_check
+      - name: Clone package_check (and adapt it to the runner)
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/YunoHost/package_check
+          # GitHub-hosted runners block outbound ICMP, so package_check's
+          # ping-based internet check fails spuriously. Fall back to an HTTPS
+          # probe (the app tests themselves are unaffected).
+          sed -i 's#|| log_critical "Unable to connect to internet."#|| curl -sfI https://yunohost.org >/dev/null 2>\&1 || curl -sfI https://framasoft.org >/dev/null 2>\&1 || log_critical "Unable to connect to internet."#' package_check/lib/common.sh
 
       - name: Run package_check
         run: |
