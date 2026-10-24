@@ -1,0 +1,398 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+#
+# ufg-worker — privileged helper for the "Update from GitHub" YunoHost app.
+#
+# Runs as root, in two ways:
+#   * from /etc/cron.d/__APP__          ("check", throttled background scan)
+#   * from the dashboard via sudo       ("recheck", "upgrade <id>")
+#
+# THIS IS THE PRIVILEGE BOUNDARY. The web user is only allowed (via sudoers) to
+# invoke this one file, which is owned by root and not writable by the web user.
+# Every argument coming from the web is re-validated here; nothing from the data
+# directory is ever sourced or executed.
+
+set -u
+
+#=================================================
+# CONFIGURATION (substituted at install time)
+#=================================================
+
+readonly APP="__APP__"
+readonly DATA_DIR="__DATA_DIR__"
+readonly SELF="__INSTALL_DIR__/bin/ufg-worker"
+
+readonly APPS_FILE="$DATA_DIR/apps.json"
+readonly CONFIG_FILE="$DATA_DIR/config.json"
+readonly STATE_FILE="$DATA_DIR/state.json"
+readonly TOKEN_FILE="$DATA_DIR/github_token"
+readonly JOBS_DIR="$DATA_DIR/jobs"
+readonly LOG_FILE="/var/log/$APP/$APP.log"
+
+umask 027
+
+#=================================================
+# SMALL HELPERS
+#=================================================
+
+log() {
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Hand ownership of worker-written files back to the web user so the dashboard
+# (running as "$APP") can read them.
+fix_owner() {
+    chown "$APP:$APP" "$@" 2>/dev/null || true
+}
+
+die() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+require_root() {
+    [ "$(id -u)" -eq 0 ] || die "ufg-worker must run as root"
+}
+
+config_get() {
+    # $1 = jq filter, $2 = default
+    local value
+    value="$(jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null)"
+    [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$2"
+}
+
+github_host() {
+    config_get '.github_host' 'github.com'
+}
+
+github_token() {
+    [ -f "$TOKEN_FILE" ] && cat "$TOKEN_FILE" 2>/dev/null || true
+}
+
+#=================================================
+# INPUT VALIDATION
+#=================================================
+
+valid_appid() {
+    [[ "$1" =~ ^[a-z0-9_]+$ ]]
+}
+
+# Turn a stored repo URL into "owner/repo", rejecting anything that is not a
+# plain repository URL on the configured GitHub host.
+parse_owner_repo() {
+    local url="$1"
+    url="${url%.git}"
+    url="${url%/}"
+    local rest="${url#*://}"
+    local host="${rest%%/*}"
+    local path="${rest#*/}"
+    [ "$host" = "$(github_host)" ] || return 1
+    local owner="${path%%/*}"
+    local repo="${path#*/}"
+    repo="${repo%%/*}"
+    [[ "$owner" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    [[ "$repo" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    printf '%s/%s' "$owner" "$repo"
+}
+
+appid_is_tracked() {
+    jq -e --arg id "$1" 'any(.[]; .id == $id)' "$APPS_FILE" >/dev/null 2>&1
+}
+
+#=================================================
+# GITHUB / VERSION LOGIC
+#=================================================
+
+# Fetch a file (manifest.toml or manifest.json) from a repo+branch. Uses the
+# GitHub API when a token is present (works for private repos), otherwise the
+# public raw endpoint.
+fetch_repo_file() {
+    local owner_repo="$1" ref="$2" filename="$3"
+    local token
+    token="$(github_token)"
+    if [ -n "$token" ]; then
+        curl -fsSL --max-time 20 \
+            -H "Authorization: token $token" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/$owner_repo/contents/$filename?ref=$ref" 2>/dev/null
+    else
+        curl -fsSL --max-time 20 \
+            "https://raw.githubusercontent.com/$owner_repo/$ref/$filename" 2>/dev/null
+    fi
+}
+
+# Print the remote version for owner/repo + branch, or nothing on failure.
+remote_version() {
+    local owner_repo="$1" branch="$2"
+    local ref="${branch:-HEAD}"
+    [ -z "$ref" ] && ref="HEAD"
+
+    local content version
+    content="$(fetch_repo_file "$owner_repo" "$ref" "manifest.toml")"
+    if [ -n "$content" ]; then
+        version="$(grep -oP '^\s*version\s*=\s*"\K[^"]+' <<< "$content" | head -1)"
+        [ -n "$version" ] && { printf '%s' "$version"; return 0; }
+    fi
+
+    # Fall back to the old v1 manifest.json.
+    content="$(fetch_repo_file "$owner_repo" "$ref" "manifest.json")"
+    if [ -n "$content" ]; then
+        version="$(jq -r '.version // empty' <<< "$content" 2>/dev/null)"
+        [ -n "$version" ] && { printf '%s' "$version"; return 0; }
+    fi
+    return 1
+}
+
+# Version currently installed for an app id.
+installed_version() {
+    local id="$1" info version
+    info="$(yunohost app info "$id" --output-as json 2>/dev/null)"
+    version="$(jq -r '.version // empty' <<< "$info" 2>/dev/null)"
+    version="${version%% *}"   # drop any trailing " (...)" annotation
+    if [ -z "$version" ] && [ -f "/etc/yunohost/apps/$id/manifest.toml" ]; then
+        version="$(grep -oP '^\s*version\s*=\s*"\K[^"]+' "/etc/yunohost/apps/$id/manifest.toml" | head -1)"
+    fi
+    printf '%s' "$version"
+}
+
+#=================================================
+# INVENTORY + CHECK
+#=================================================
+
+build_inventory() {
+    # NDJSON of {id,label,version} for every installed app.
+    local ids id info label version
+    ids="$(yunohost app list --output-as json 2>/dev/null | jq -r '.apps[].id' 2>/dev/null)"
+    for id in $ids; do
+        info="$(yunohost app info "$id" --output-as json 2>/dev/null)"
+        label="$(jq -r '.name // empty' <<< "$info" 2>/dev/null)"
+        [ -z "$label" ] && label="$id"
+        version="$(jq -r '.version // empty' <<< "$info" 2>/dev/null)"
+        version="${version%% *}"
+        jq -n --arg id "$id" --arg label "$label" --arg version "$version" \
+            '{id: $id, label: $label, version: $version}'
+    done
+}
+
+build_tracked() {
+    # NDJSON of the result for every tracked app.
+    local entry id repo_url branch installed available error update owner_repo now
+    now="$(date +%s)"
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        id="$(jq -r '.id' <<< "$entry")"
+        repo_url="$(jq -r '.repo_url' <<< "$entry")"
+        branch="$(jq -r '.branch // ""' <<< "$entry")"
+        installed="$(installed_version "$id")"
+        available=""
+        error=""
+        update=false
+
+        if ! owner_repo="$(parse_owner_repo "$repo_url")"; then
+            error="Invalid GitHub repository URL"
+        else
+            if available="$(remote_version "$owner_repo" "$branch")" && [ -n "$available" ]; then
+                if [ -n "$installed" ]; then
+                    dpkg --compare-versions "$available" gt "$installed" && update=true
+                else
+                    update=true   # installed version unknown; surface the remote one
+                fi
+            else
+                available=""
+                error="Could not read a version from the repository (check URL/branch/token)"
+            fi
+        fi
+
+        jq -n \
+            --arg id "$id" \
+            --arg repo "$repo_url" \
+            --arg branch "$branch" \
+            --arg installed "$installed" \
+            --arg available "$available" \
+            --argjson update "$update" \
+            --arg error "$error" \
+            --argjson ts "$now" \
+            '{id: $id, repo_url: $repo, branch: $branch,
+              installed_version: $installed, available_version: $available,
+              update_available: $update, error: $error, checked_at: $ts}'
+    done < <(jq -c '.[]' "$APPS_FILE" 2>/dev/null)
+}
+
+notify_if_needed() {
+    # $1 = new tracked JSON array. Emails admins about updates that are newly
+    # available compared to the previous state.
+    local new_tracked="$1"
+    [ "$(config_get '.notify_email' 'true')" = "true" ] || return 0
+
+    local sendmail=""
+    command -v sendmail >/dev/null 2>&1 && sendmail="sendmail"
+    [ -z "$sendmail" ] && [ -x /usr/sbin/sendmail ] && sendmail="/usr/sbin/sendmail"
+    [ -z "$sendmail" ] && return 0
+
+    local old_keys new_keys fresh
+    old_keys="$(jq -r '[.tracked[]? | select(.update_available==true) | .id+"@"+.available_version] | .[]' "$STATE_FILE" 2>/dev/null | sort -u)"
+    new_keys="$(jq -r '[.[] | select(.update_available==true) | .id+"@"+.available_version] | .[]' <<< "$new_tracked" 2>/dev/null | sort -u)"
+    fresh="$(comm -13 <(printf '%s\n' "$old_keys") <(printf '%s\n' "$new_keys") | grep -v '^$' || true)"
+    [ -z "$fresh" ] && return 0
+
+    {
+        printf 'To: root\n'
+        printf 'Subject: [YunoHost] Update(s) available for your GitHub apps\n'
+        printf 'Content-Type: text/plain; charset=utf-8\n\n'
+        printf 'The following tracked app(s) have a newer version on GitHub:\n\n'
+        local key id ver
+        while IFS= read -r key; do
+            id="${key%@*}"
+            ver="${key#*@}"
+            printf '  - %s  ->  %s\n' "$id" "$ver"
+        done <<< "$fresh"
+        printf '\nOpen the "Update from GitHub" dashboard to review and apply them.\n'
+    } | "$sendmail" -t 2>/dev/null || true
+}
+
+write_check_status() {
+    # $1 = status, $2 = number of updates (optional)
+    local status="$1" updates="${2:-0}"
+    jq -n --arg status "$status" --argjson updates "$updates" --argjson ts "$(date +%s)" \
+        '{status: $status, updates: $updates, finished: $ts}' \
+        > "$JOBS_DIR/_check.json.tmp" 2>/dev/null \
+        && mv "$JOBS_DIR/_check.json.tmp" "$JOBS_DIR/_check.json"
+    fix_owner "$JOBS_DIR/_check.json"
+}
+
+run_check() {
+    local force="$1"
+    require_root
+
+    # Throttle unless forced.
+    if [ "$force" != "force" ]; then
+        local interval last now
+        interval="$(config_get '.check_interval_hours' '24')"
+        last="$(jq -r '.last_check // 0' "$STATE_FILE" 2>/dev/null)"
+        now="$(date +%s)"
+        if [ "$((now - last))" -lt "$((interval * 3600))" ]; then
+            log "check skipped (throttled, interval ${interval}h)"
+            return 0
+        fi
+    fi
+
+    log "check started (force=$force)"
+
+    local inventory tracked now updates
+    inventory="$(build_inventory | jq -s '.' 2>/dev/null)"
+    [ -z "$inventory" ] && inventory="[]"
+    tracked="$(build_tracked | jq -s '.' 2>/dev/null)"
+    [ -z "$tracked" ] && tracked="[]"
+    now="$(date +%s)"
+
+    notify_if_needed "$tracked"
+
+    jq -n \
+        --argjson inventory "$inventory" \
+        --argjson tracked "$tracked" \
+        --argjson ts "$now" \
+        '{last_check: $ts, inventory: $inventory, tracked: $tracked}' \
+        > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+    fix_owner "$STATE_FILE"
+
+    updates="$(jq '[.[] | select(.update_available==true)] | length' <<< "$tracked" 2>/dev/null || echo 0)"
+    write_check_status "ok" "$updates"
+    log "check finished ($updates update(s) available)"
+}
+
+#=================================================
+# UPGRADE
+#=================================================
+
+upgrade_url_for() {
+    local id="$1" repo_url branch url
+    repo_url="$(jq -r --arg id "$id" '.[] | select(.id==$id) | .repo_url' "$APPS_FILE" 2>/dev/null)"
+    branch="$(jq -r --arg id "$id" '.[] | select(.id==$id) | .branch // ""' "$APPS_FILE" 2>/dev/null)"
+    url="${repo_url%.git}"
+    url="${url%/}"
+    if [ -n "$branch" ] && [ "$branch" != "default" ] && [ "$branch" != "HEAD" ]; then
+        url="$url/tree/$branch"
+    fi
+    printf '%s' "$url"
+}
+
+write_job_status() {
+    # $1 id, $2 status, $3 returncode (optional)
+    local id="$1" status="$2" rc="${3:-null}"
+    jq -n --arg id "$id" --arg status "$status" --argjson rc "$rc" --argjson ts "$(date +%s)" \
+        '{id: $id, status: $status, returncode: $rc, updated: $ts}' \
+        > "$JOBS_DIR/$id.json.tmp" 2>/dev/null \
+        && mv "$JOBS_DIR/$id.json.tmp" "$JOBS_DIR/$id.json"
+    fix_owner "$JOBS_DIR/$id.json"
+}
+
+do_upgrade() {
+    local id="$1"
+    require_root
+    valid_appid "$id" || die "Invalid app id"
+    appid_is_tracked "$id" || die "App '$id' is not tracked"
+
+    local url logf rc
+    url="$(upgrade_url_for "$id")"
+    logf="$JOBS_DIR/$id.log"
+
+    write_job_status "$id" "running"
+    {
+        printf '=== %s : upgrading %s from %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$id" "$url"
+    } > "$logf"
+    fix_owner "$logf"
+
+    log "upgrade $id started ($url)"
+    yunohost app upgrade "$id" --force -u "$url" >> "$logf" 2>&1
+    rc=$?
+    fix_owner "$logf"
+
+    if [ "$rc" -eq 0 ]; then
+        write_job_status "$id" "success" "$rc"
+        log "upgrade $id succeeded"
+    else
+        write_job_status "$id" "failed" "$rc"
+        log "upgrade $id failed (rc=$rc)"
+    fi
+
+    # Refresh versions so the dashboard reflects the new state.
+    run_check "force"
+}
+
+#=================================================
+# MAIN DISPATCH
+#=================================================
+
+mkdir -p "$JOBS_DIR" 2>/dev/null || true
+
+action="${1:-}"
+case "$action" in
+    check)
+        # Synchronous check (used by cron and by install). "--force" bypasses throttle.
+        if [ "${2:-}" = "--force" ]; then run_check "force"; else run_check "auto"; fi
+        ;;
+    recheck)
+        # Called by the dashboard: force a check in the background and return now.
+        require_root
+        write_check_status "running"
+        setsid nohup "$SELF" check --force >> "$LOG_FILE" 2>&1 < /dev/null &
+        echo '{"status": "started"}'
+        ;;
+    upgrade)
+        # Called by the dashboard: launch the upgrade in the background and return now.
+        require_root
+        id="${2:-}"
+        valid_appid "$id" || die "Invalid app id"
+        appid_is_tracked "$id" || die "App '$id' is not tracked"
+        write_job_status "$id" "running"
+        setsid nohup "$SELF" _do_upgrade "$id" >> "$LOG_FILE" 2>&1 < /dev/null &
+        echo '{"status": "started", "id": "'"$id"'"}'
+        ;;
+    _do_upgrade)
+        # Internal: the detached worker that actually performs the upgrade.
+        do_upgrade "${2:-}"
+        ;;
+    *)
+        die "Usage: ufg-worker {check [--force]|recheck|upgrade <id>}"
+        ;;
+esac

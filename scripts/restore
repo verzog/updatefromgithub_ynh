@@ -1,0 +1,59 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+# Keep this path for calling _common.sh inside the backup/restore context.
+source ../settings/scripts/_common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# RESTORE THE APP MAIN DIR AND DATA DIR
+#=================================================
+ynh_script_progression "Restoring $app's directories..."
+
+ynh_restore "$install_dir"
+chown -R "$app:www-data" "$install_dir"
+# Keep the worker root-owned and not writable by the web user (see install).
+chown -R root:root "$install_dir/bin"
+chmod 755 "$install_dir/bin" "$install_dir/bin/ufg-worker"
+
+ynh_restore "$data_dir"
+chown -R "$app:$app" "$data_dir"
+
+#=================================================
+# RESTORE SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Restoring system configurations related to $app..."
+
+ynh_restore "/etc/php/$php_version/fpm/pool.d/$app.conf"
+
+ynh_restore "/etc/nginx/conf.d/$domain.d/$app.conf"
+
+ynh_restore "/etc/logrotate.d/$app"
+
+ynh_restore "/etc/sudoers.d/$app"
+chown root:root "/etc/sudoers.d/$app"
+chmod 440 "/etc/sudoers.d/$app"
+
+ynh_restore "/etc/cron.d/$app"
+
+mkdir -p "/var/log/$app"
+chown -R "$app:$app" "/var/log/$app"
+
+#=================================================
+# RELOAD NGINX AND PHP-FPM
+#=================================================
+ynh_script_progression "Reloading NGINX web server and PHP-FPM..."
+
+ynh_systemctl --service="php$php_version-fpm" --action=reload
+
+ynh_systemctl --service=nginx --action=reload
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Restoration completed for $app"

@@ -1,0 +1,75 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/manifest.v2.schema.json
+
+packaging_format = 2
+
+id = "updatefromgithub"
+name = "Update from GitHub"
+description.en = "Monitor and update YunoHost apps installed from GitHub that are not in the official catalogue"
+description.fr = "Surveiller et mettre à jour les applications YunoHost installées depuis GitHub et absentes du catalogue officiel"
+
+version = "1.0~ynh1"
+
+maintainers = ["verzog"]
+
+[upstream]
+# This app's source lives in its own package repository (there is no separate
+# upstream project).
+license = "GPL-3.0-or-later"
+code = "https://github.com/verzog/updatefromgithub_ynh"
+admindoc = "https://github.com/verzog/updatefromgithub_ynh/blob/main/doc/ADMIN.md"
+
+[integration]
+# Uses helpers 2.1, which ship with YunoHost 12.
+yunohost = ">= 12.0.0"
+helpers_version = "2.1"
+architectures = "all"
+# A single system-wide monitor; installing it twice would not make sense.
+multi_instance = false
+# Users do not log in to the app itself; it is an admin dashboard behind the portal.
+ldap = false
+sso = true
+disk = "20M"
+ram.build = "20M"
+ram.runtime = "20M"
+
+[install]
+    [install.domain]
+    type = "domain"
+
+    [install.path]
+    type = "path"
+    default = "/updatefromgithub"
+
+    [install.init_main_permission]
+    # The dashboard can trigger privileged upgrades, so it must stay admin-only.
+    type = "group"
+    default = "admins"
+
+    [install.notify_email]
+    type = "boolean"
+    default = true
+    ask.en = "Email the server admins when an update is available for a tracked app?"
+    ask.fr = "Envoyer un courriel aux administrateurs quand une mise à jour est disponible ?"
+
+    [install.github_token]
+    # Password-type questions are never stored as a setting by the core; the
+    # install script writes it to a 0600 file in the data directory itself.
+    type = "password"
+    optional = true
+    ask.en = "GitHub personal access token (optional)"
+    ask.fr = "Jeton d'accès personnel GitHub (facultatif)"
+    help.en = "Optional GitHub personal access token, used for private repositories and to raise the API rate limit. Leave empty for public repositories."
+    help.fr = "Jeton d'accès personnel GitHub facultatif, pour les dépôts privés et pour augmenter la limite de l'API. Laissez vide pour les dépôts publics."
+
+[resources]
+    [resources.system_user]
+
+    [resources.install_dir]
+
+    [resources.data_dir]
+
+    [resources.permissions]
+    main.url = "/"
+
+    [resources.apt]
+    packages = "php8.3-fpm, php8.3-cli, jq, curl"

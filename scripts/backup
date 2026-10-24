@@ -1,0 +1,42 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+# Keep this path for calling _common.sh inside the backup/restore context.
+source ../settings/scripts/_common.sh
+source /usr/share/yunohost/helpers
+
+ynh_print_info "Declaring files to be backed up..."
+
+### These are declarations only; the core performs the actual copy afterwards.
+
+#=================================================
+# BACKUP THE APP MAIN DIR AND DATA DIR
+#=================================================
+
+ynh_backup "$install_dir"
+
+ynh_backup "$data_dir"
+
+#=================================================
+# BACKUP SYSTEM CONFIGURATION
+#=================================================
+
+ynh_backup "/etc/php/$php_version/fpm/pool.d/$app.conf"
+
+ynh_backup "/etc/nginx/conf.d/$domain.d/$app.conf"
+
+ynh_backup "/etc/logrotate.d/$app"
+
+ynh_backup "/etc/sudoers.d/$app"
+
+ynh_backup "/etc/cron.d/$app"
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_print_info "Backup script completed for $app. (YunoHost will then actually copy those files to the archive)."

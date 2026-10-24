@@ -1,0 +1,99 @@
+# YunoHost package_check in GitHub Actions.
+#
+# package_check runs the real install / remove / upgrade / backup / restore /
+# linter tests inside a YunoHost container. It is the same tool YunoHost's own
+# CI (ci-apps.yunohost.org) uses; running it here gives per-PR feedback.
+#
+# Notes:
+#   * Current package_check targets Incus (its image remote is
+#     repo.yunohost.org/incus and its URL test binds to the incusbr0 bridge),
+#     so we use Incus rather than LXD.
+#   * The base YunoHost image is built once with --rebuild (downloads a Debian
+#     container via the images: remote and installs YunoHost inside it). This is
+#     deterministic and does not depend on a prebuilt image being available on
+#     the yunohost: remote.
+#   * The canonical YunoHost test path is still the official CI you get by
+#     submitting the app to the catalogue; this workflow is an extra, local-ish
+#     safety net for development.
+
+name: Package check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package_check:
+    name: Install / upgrade / backup / restore (package_check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the package
+        uses: actions/checkout@v4.2.2
+        with:
+          path: updatefromgithub_ynh
+
+      - name: Install dependencies and Incus
+        run: |
+          set -eux
+          sudo apt-get update
+          # package_check's own deps: lynx, jq, python3, pip3, and its Python
+          # helpers import toml (tests parser) + pycurl & bs4 (URL test).
+          sudo apt-get install -y \
+            lynx jq btrfs-progs python3-pip python3-toml python3-pycurl python3-bs4 incus
+          # Let the runner user drive Incus (picked up below via `sg incus-admin`).
+          sudo usermod -aG incus-admin "$USER"
+
+      - name: Initialise Incus
+        run: |
+          set -eux
+          sudo incus admin init --minimal
+          # GitHub runners ship Docker, whose iptables FORWARD policy is DROP and
+          # blocks the incusbr0 bridge, leaving containers without internet.
+          sudo iptables -P FORWARD ACCEPT || true
+
+      - name: Clone package_check (and adapt it to the runner)
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/YunoHost/package_check
+          # GitHub-hosted runners block outbound ICMP, so package_check's
+          # ping-based internet check fails spuriously. Fall back to an HTTPS
+          # probe (the app tests themselves are unaffected).
+          sed -i 's#|| log_critical "Unable to connect to internet."#|| curl -sfI https://yunohost.org >/dev/null 2>\&1 || curl -sfI https://framasoft.org >/dev/null 2>\&1 || log_critical "Unable to connect to internet."#' package_check/lib/common.sh
+
+      - name: Build the base YunoHost image
+        # Builds the local base image (and adds the yunohost: remote). Slow:
+        # downloads a Debian container and installs YunoHost inside it.
+        run: |
+          set -euo pipefail
+          cd package_check
+          sg incus-admin -c "YNHDEV_BACKEND=incus ./package_check.sh --rebuild"
+
+      - name: Run package_check
+        run: |
+          set -euo pipefail
+          cd package_check
+          # package_check always exits 0, even when tests fail, so capture its
+          # output and fail the job ourselves if any test reported FAIL.
+          sg incus-admin -c "YNHDEV_BACKEND=incus ./package_check.sh ../updatefromgithub_ynh" 2>&1 | tee run.log
+          if grep -q -- "--- FAIL ---" run.log; then
+            echo "::error::package_check reported at least one failing test (see log above)."
+            exit 1
+          fi
+          echo "All package_check tests passed."
+
+      - name: Upload the test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: package-check-results
+          path: |
+            package_check/run.log
+            package_check/full_log_*.log
+            package_check/results_*.json
+          if-no-files-found: ignore

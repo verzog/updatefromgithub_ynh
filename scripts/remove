@@ -1,0 +1,37 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+### The core removes $install_dir (and $data_dir when --purge is used) after
+### this script. We only clean up what we created outside of those.
+
+#=================================================
+# REMOVE SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Removing system configurations related to $app..."
+
+ynh_config_remove_logrotate
+
+ynh_config_remove_nginx
+
+ynh_config_remove_phpfpm
+
+ynh_safe_rm "/etc/sudoers.d/$app"
+
+ynh_safe_rm "/etc/cron.d/$app"
+
+# NB: /var/log/$app is intentionally not removed here. Log removal is handled
+# by the core, and deleting it in this script risks losing logs if an upgrade
+# fails and rolls back.
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Removal of $app completed"

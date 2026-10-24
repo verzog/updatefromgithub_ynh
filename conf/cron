@@ -1,0 +1,5 @@
+# Background update check for the "Update from GitHub" dashboard (__APP__).
+# Runs hourly, but the worker itself skips the check unless the interval set in
+# the dashboard (config.json, default 24h) has elapsed. "Check now" in the UI
+# bypasses that throttle. Minute 17 avoids the top-of-the-hour rush.
+17 * * * * root __INSTALL_DIR__/bin/ufg-worker check >/dev/null 2>&1

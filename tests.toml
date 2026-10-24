@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/tests.v1.schema.json
+
+test_format = 1.0
+
+[default]
+    # The package installs no third-party service and the standard install/
+    # remove/upgrade/backup-restore tests are deduced automatically from the
+    # manifest, so no extra configuration is needed here.

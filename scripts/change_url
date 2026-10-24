@@ -1,0 +1,27 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+### New location is available via $domain and $path; old values via
+### $old_domain and $old_path.
+
+#=================================================
+# MODIFY URL IN NGINX CONF
+#=================================================
+ynh_script_progression "Updating NGINX web server configuration..."
+
+# The dashboard reads its data/worker paths at runtime and does not depend on
+# the domain or path, so adjusting the NGINX config is all that is needed.
+ynh_config_change_url_nginx
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Change of URL completed for $app"
