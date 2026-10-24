@@ -26,7 +26,7 @@ jobs:
   package_check:
     name: Install / upgrade / backup / restore (package_check)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Check out the package
         uses: actions/checkout@v4.2.2
@@ -73,6 +73,15 @@ jobs:
           # ping-based internet check fails spuriously. Fall back to an HTTPS
           # probe (the app tests themselves are unaffected).
           sed -i 's#|| log_critical "Unable to connect to internet."#|| curl -sfI https://yunohost.org >/dev/null 2>\&1 || curl -sfI https://framasoft.org >/dev/null 2>\&1 || log_critical "Unable to connect to internet."#' package_check/lib/common.sh
+
+      - name: Build the base YunoHost image
+        # package_check needs a local base image (Debian container + YunoHost
+        # installed), built once with --rebuild. This is the slow step: it
+        # downloads a container and runs the full YunoHost install inside it.
+        run: |
+          set -eux
+          cd package_check
+          sg lxd -c "./package_check.sh --rebuild"
 
       - name: Run package_check
         run: |
