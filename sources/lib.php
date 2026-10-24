@@ -9,32 +9,53 @@
 
 require_once __DIR__ . '/config.php';
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
 /** HTML-escape a value for safe output. */
 function h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
-/** Return (creating if needed) the per-session CSRF token. */
+/**
+ * Return the CSRF token, using a stateless double-submit cookie rather than a
+ * PHP session. Sessions can be garbage-collected while a page stays open (the
+ * token then goes stale and every action 403s) and may not persist on some
+ * setups; a cookie avoids both. The same value is rendered into the page and
+ * sent back in a header, and ufg_require_csrf() checks the header against the
+ * cookie. SameSite=Lax stops a cross-site page from making the request.
+ */
 function ufg_csrf_token(): string
 {
-    if (empty($_SESSION['ufg_csrf'])) {
-        $_SESSION['ufg_csrf'] = bin2hex(random_bytes(16));
+    $token = $_COOKIE['ufg_csrf'] ?? '';
+    if (!preg_match('/^[a-f0-9]{32}$/', $token)) {
+        $token = bin2hex(random_bytes(16));
     }
-    return $_SESSION['ufg_csrf'];
+    if (!headers_sent()) {
+        $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/') . '/';
+        setcookie('ufg_csrf', $token, [
+            'expires'  => time() + 2592000, // 30 days; survives browser restarts
+            'path'     => $base,
+            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+            'httponly' => false,
+            'samesite' => 'Lax',
+        ]);
+    }
+    // Make it visible to a same-request API call too.
+    $_COOKIE['ufg_csrf'] = $token;
+    return $token;
 }
 
-/** Abort with 403 unless the request carries a valid CSRF token. */
+/** Abort with 403 unless the request's CSRF header matches the cookie. */
 function ufg_require_csrf(): void
 {
-    $sent = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($_POST['csrf'] ?? '');
-    if (!hash_equals($_SESSION['ufg_csrf'] ?? '', (string) $sent)) {
+    // Only accept the token from the custom header, never from a form field:
+    // a cross-origin context cannot set a custom header, so this prevents a
+    // sibling-subdomain attacker who can plant a parent-domain ufg_csrf cookie
+    // from forging a valid double-submit pair via a plain (same-site) form POST.
+    $sent = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $cookie = $_COOKIE['ufg_csrf'] ?? '';
+    if ($cookie === '' || !hash_equals($cookie, (string) $sent)) {
         http_response_code(403);
-        echo json_encode(['error' => 'Invalid or missing CSRF token.']);
+        echo json_encode(['error' => 'Invalid or missing CSRF token. Reload the page and try again.']);
         exit;
     }
 }
