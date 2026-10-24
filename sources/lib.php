@@ -47,7 +47,11 @@ function ufg_csrf_token(): string
 /** Abort with 403 unless the request's CSRF header matches the cookie. */
 function ufg_require_csrf(): void
 {
-    $sent = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($_POST['csrf'] ?? '');
+    // Only accept the token from the custom header, never from a form field:
+    // a cross-origin context cannot set a custom header, so this prevents a
+    // sibling-subdomain attacker who can plant a parent-domain ufg_csrf cookie
+    // from forging a valid double-submit pair via a plain (same-site) form POST.
+    $sent = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
     $cookie = $_COOKIE['ufg_csrf'] ?? '';
     if ($cookie === '' || !hash_equals($cookie, (string) $sent)) {
         http_response_code(403);
