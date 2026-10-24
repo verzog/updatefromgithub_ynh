@@ -170,7 +170,7 @@ build_inventory() {
         version="$(jq -r '.version // empty' <<< "$info" 2>/dev/null)"
         version="${version%% *}"
         jq -n --arg id "$id" --arg label "$label" --arg version "$version" \
-            '{id: $id, label: $label, version: $version}'
+            '{"id": $id, "label": $label, "version": $version}'
     done
 }
 
@@ -212,9 +212,9 @@ build_tracked() {
             --argjson update "$update" \
             --arg error "$error" \
             --argjson ts "$now" \
-            '{id: $id, repo_url: $repo, branch: $branch,
-              installed_version: $installed, available_version: $available,
-              update_available: $update, error: $error, checked_at: $ts}'
+            '{"id": $id, "repo_url": $repo, "branch": $branch,
+              "installed_version": $installed, "available_version": $available,
+              "update_available": $update, "error": $error, "checked_at": $ts}'
     done < <(jq -c '.[]' "$APPS_FILE" 2>/dev/null)
 }
 
@@ -254,7 +254,7 @@ write_check_status() {
     # $1 = status, $2 = number of updates (optional)
     local status="$1" updates="${2:-0}"
     jq -n --arg status "$status" --argjson updates "$updates" --argjson ts "$(date +%s)" \
-        '{status: $status, updates: $updates, finished: $ts}' \
+        '{"status": $status, "updates": $updates, "finished": $ts}' \
         > "$JOBS_DIR/_check.json.tmp" 2>/dev/null \
         && mv "$JOBS_DIR/_check.json.tmp" "$JOBS_DIR/_check.json"
     fix_owner "$JOBS_DIR/_check.json"
@@ -291,7 +291,7 @@ run_check() {
         --argjson inventory "$inventory" \
         --argjson tracked "$tracked" \
         --argjson ts "$now" \
-        '{last_check: $ts, inventory: $inventory, tracked: $tracked}' \
+        '{"last_check": $ts, "inventory": $inventory, "tracked": $tracked}' \
         > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
     fix_owner "$STATE_FILE"
 
@@ -320,7 +320,7 @@ write_job_status() {
     # $1 id, $2 status, $3 returncode (optional)
     local id="$1" status="$2" rc="${3:-null}"
     jq -n --arg id "$id" --arg status "$status" --argjson rc "$rc" --argjson ts "$(date +%s)" \
-        '{id: $id, status: $status, returncode: $rc, updated: $ts}' \
+        '{"id": $id, "status": $status, "returncode": $rc, "updated": $ts}' \
         > "$JOBS_DIR/$id.json.tmp" 2>/dev/null \
         && mv "$JOBS_DIR/$id.json.tmp" "$JOBS_DIR/$id.json"
     fix_owner "$JOBS_DIR/$id.json"
