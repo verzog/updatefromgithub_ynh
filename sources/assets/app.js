@@ -7,8 +7,19 @@
 (function () {
     "use strict";
 
-    const CSRF = document.querySelector('meta[name="csrf-token"]').content;
     const $ = (sel) => document.querySelector(sel);
+
+    // Read the CSRF token from the live cookie (falls back to the meta tag).
+    // Reading it at call time means a long-open page still sends the current
+    // value instead of a stale one.
+    function csrfToken() {
+        const m = document.cookie.match(/(?:^|;\s*)ufg_csrf=([a-f0-9]{32})/);
+        if (m) {
+            return m[1];
+        }
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.content : "";
+    }
 
     // ---- API helpers -----------------------------------------------------
 
@@ -21,7 +32,7 @@
     async function apiPost(action, data) {
         const res = await fetch("api.php?action=" + encodeURIComponent(action), {
             method: "POST",
-            headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
             body: JSON.stringify(data || {}),
         });
         let json = {};
