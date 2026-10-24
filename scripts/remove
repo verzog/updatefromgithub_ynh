@@ -26,7 +26,9 @@ ynh_safe_rm "/etc/sudoers.d/$app"
 
 ynh_safe_rm "/etc/cron.d/$app"
 
-ynh_safe_rm "/var/log/$app"
+# NB: /var/log/$app is intentionally not removed here. Log removal is handled
+# by the core, and deleting it in this script risks losing logs if an upgrade
+# fails and rolls back.
 
 #=================================================
 # END OF SCRIPT

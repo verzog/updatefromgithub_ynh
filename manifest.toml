@@ -56,6 +56,8 @@ ram.runtime = "20M"
     # install script writes it to a 0600 file in the data directory itself.
     type = "password"
     optional = true
+    ask.en = "GitHub personal access token (optional)"
+    ask.fr = "Jeton d'accès personnel GitHub (facultatif)"
     help.en = "Optional GitHub personal access token, used for private repositories and to raise the API rate limit. Leave empty for public repositories."
     help.fr = "Jeton d'accès personnel GitHub facultatif, pour les dépôts privés et pour augmenter la limite de l'API. Laissez vide pour les dépôts publics."
 

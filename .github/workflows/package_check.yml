@@ -38,7 +38,8 @@ jobs:
           set -eux
           sudo apt-get update
           # python3-toml: package_check's tests.toml parser imports `toml`.
-          sudo apt-get install -y lynx jq btrfs-progs python3-toml
+          # python3-pycurl: its URL-reachability test (lib/curl_tests.py) imports `pycurl`.
+          sudo apt-get install -y lynx jq btrfs-progs python3-toml python3-pycurl
           sudo snap install lxd
           # snap puts lxc/lxd in /snap/bin, which is not in sudo's secure_path,
           # so package_check (which calls `sudo lxc ...`) can't find them.
@@ -85,9 +86,16 @@ jobs:
 
       - name: Run package_check
         run: |
-          set -eux
+          set -euo pipefail
           cd package_check
-          sg lxd -c "./package_check.sh ../updatefromgithub_ynh"
+          # package_check always exits 0, even when tests fail, so capture its
+          # output and fail the job ourselves if any test reported FAIL.
+          sg lxd -c "./package_check.sh ../updatefromgithub_ynh" 2>&1 | tee run.log
+          if grep -q -- "--- FAIL ---" run.log; then
+            echo "::error::package_check reported at least one failing test (see log above)."
+            exit 1
+          fi
+          echo "All package_check tests passed."
 
       - name: Upload the test results
         if: ${{ !cancelled() }}
@@ -95,6 +103,7 @@ jobs:
         with:
           name: package-check-results
           path: |
-            package_check/Test_results.log
-            package_check/results-*.json
+            package_check/run.log
+            package_check/full_log_*.log
+            package_check/results_*.json
           if-no-files-found: ignore
