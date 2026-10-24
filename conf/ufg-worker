@@ -169,8 +169,10 @@ build_inventory() {
         [ -z "$label" ] && label="$id"
         version="$(jq -r '.version // empty' <<< "$info" 2>/dev/null)"
         version="${version%% *}"
-        jq -n --arg id "$id" --arg label "$label" --arg version "$version" \
-            '{"id": $id, "label": $label, "version": $version}'
+        # NB: the jq variable must NOT be named $label -- `label` is a reserved
+        # word in jq (1.6 fails to parse `$label`). Use a non-reserved name.
+        jq -n --arg id "$id" --arg applabel "$label" --arg version "$version" \
+            '{"id": $id, "label": $applabel, "version": $version}'
     done
 }
 
@@ -209,12 +211,12 @@ build_tracked() {
             --arg branch "$branch" \
             --arg installed "$installed" \
             --arg available "$available" \
-            --argjson update "$update" \
-            --arg error "$error" \
+            --argjson upd "$update" \
+            --arg err "$error" \
             --argjson ts "$now" \
             '{"id": $id, "repo_url": $repo, "branch": $branch,
               "installed_version": $installed, "available_version": $available,
-              "update_available": $update, "error": $error, "checked_at": $ts}'
+              "update_available": $upd, "error": $err, "checked_at": $ts}'
     done < <(jq -c '.[]' "$APPS_FILE" 2>/dev/null)
 }
 
@@ -304,16 +306,9 @@ run_check() {
 # UPGRADE
 #=================================================
 
-upgrade_url_for() {
-    local id="$1" repo_url branch url
-    repo_url="$(jq -r --arg id "$id" '.[] | select(.id==$id) | .repo_url' "$APPS_FILE" 2>/dev/null)"
-    branch="$(jq -r --arg id "$id" '.[] | select(.id==$id) | .branch // ""' "$APPS_FILE" 2>/dev/null)"
-    url="${repo_url%.git}"
-    url="${url%/}"
-    if [ -n "$branch" ] && [ "$branch" != "default" ] && [ "$branch" != "HEAD" ]; then
-        url="$url/tree/$branch"
-    fi
-    printf '%s' "$url"
+tracked_field() {
+    # $1 = app id, $2 = jq field (e.g. .repo_url). Prints the value or nothing.
+    jq -r --arg id "$1" ".[] | select(.id==\$id) | $2 // empty" "$APPS_FILE" 2>/dev/null
 }
 
 write_job_status() {
@@ -332,19 +327,44 @@ do_upgrade() {
     valid_appid "$id" || die "Invalid app id"
     appid_is_tracked "$id" || die "App '$id' is not tracked"
 
-    local url logf rc
-    url="$(upgrade_url_for "$id")"
+    local repo_url branch logf rc token tmp clone_url clone_rc
+    repo_url="$(tracked_field "$id" '.repo_url')"
+    repo_url="${repo_url%/}"
+    branch="$(tracked_field "$id" '.branch')"
     logf="$JOBS_DIR/$id.log"
 
     write_job_status "$id" "running"
-    {
-        printf '=== %s : upgrading %s from %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$id" "$url"
-    } > "$logf"
+    printf '=== %s : upgrading %s (branch: %s) ===\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$id" "${branch:-default}" > "$logf"
     fix_owner "$logf"
+    log "upgrade $id started (branch: ${branch:-default})"
 
-    log "upgrade $id started ($url)"
-    yunohost app upgrade "$id" --force -u "$url" >> "$logf" 2>&1
-    rc=$?
+    if [ -n "$branch" ] && [ "$branch" != "default" ] && [ "$branch" != "HEAD" ]; then
+        # A specific branch: clone it and upgrade from the local folder via
+        # --file. This avoids the "/tree/<branch>" URL form, which YunoHost
+        # rejects (notably for branch names containing a slash), and lets a
+        # private repo authenticate with the stored token.
+        tmp="$(mktemp -d)"
+        token="$(github_token)"
+        clone_url="$repo_url"
+        [ -n "$token" ] && clone_url="https://${token}@${repo_url#https://}"
+        git clone --depth 1 --branch "$branch" "$clone_url" "$tmp/app" > "$tmp/clone.log" 2>&1
+        clone_rc=$?
+        # Redact the token before the clone output reaches the (UI-visible) log.
+        sed "s#${token:-__ufg_no_token__}#***#g" "$tmp/clone.log" >> "$logf"
+        if [ "$clone_rc" -eq 0 ]; then
+            yunohost app upgrade "$id" --force --file "$tmp/app" >> "$logf" 2>&1
+            rc=$?
+        else
+            printf 'git clone of branch %s failed (see above)\n' "$branch" >> "$logf"
+            rc=1
+        fi
+        rm -rf "$tmp"
+    else
+        # Default branch: fetch straight from the repository URL.
+        yunohost app upgrade "$id" --force -u "$repo_url" >> "$logf" 2>&1
+        rc=$?
+    fi
     fix_owner "$logf"
 
     if [ "$rc" -eq 0 ]; then
