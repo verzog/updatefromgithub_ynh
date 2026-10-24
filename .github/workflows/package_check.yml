@@ -1,0 +1,73 @@
+# YunoHost package_check in GitHub Actions.
+#
+# package_check runs the real install / remove / upgrade / backup / restore /
+# linter tests inside a YunoHost LXD container. It is the same tool YunoHost's
+# own CI (ci-apps.yunohost.org) uses; running it here gives per-PR feedback.
+#
+# Notes:
+#   * It needs LXD and YunoHost's container images, so it is heavy and slow
+#     (expect 15-40 minutes) and only runs on GitHub-hosted Ubuntu runners.
+#   * The canonical YunoHost test path is still the official CI you get by
+#     submitting the app to the catalogue; this workflow is an extra, local-ish
+#     safety net for development.
+
+name: Package check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package_check:
+    name: Install / upgrade / backup / restore (package_check)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the package
+        uses: actions/checkout@v4.2.2
+        with:
+          path: updatefromgithub_ynh
+
+      - name: Install dependencies and LXD
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y lynx jq btrfs-progs
+          sudo snap install lxd
+          # Give the runner user access to the LXD socket. The new group is
+          # picked up below with `sg lxd` (a re-login is not possible on CI).
+          sudo usermod -a -G lxd "$USER"
+
+      - name: Initialise LXD
+        run: sudo lxd init --auto --storage-backend dir
+
+      - name: Add the YunoHost image remote
+        # Added as the runner user (not root) so package_check, which runs as
+        # that user, finds the remote in its own LXC config.
+        run: |
+          sg lxd -c "lxc remote add yunohost https://repo.yunohost.org/incus \
+            --protocol simplestreams --public" || true
+
+      - name: Clone package_check
+        run: git clone --depth 1 https://github.com/YunoHost/package_check
+
+      - name: Run package_check
+        run: |
+          set -eux
+          cd package_check
+          sg lxd -c "./package_check.sh ../updatefromgithub_ynh"
+
+      - name: Upload the test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: package-check-results
+          path: |
+            package_check/Test_results.log
+            package_check/results-*.json
+          if-no-files-found: ignore
