@@ -1,12 +1,15 @@
 # YunoHost package_check in GitHub Actions.
 #
 # package_check runs the real install / remove / upgrade / backup / restore /
-# linter tests inside a YunoHost LXD container. It is the same tool YunoHost's
-# own CI (ci-apps.yunohost.org) uses; running it here gives per-PR feedback.
+# linter tests inside a YunoHost container. It is the same tool YunoHost's own
+# CI (ci-apps.yunohost.org) uses; running it here gives per-PR feedback.
 #
 # Notes:
-#   * It needs LXD and YunoHost's container images, so it is heavy and slow
-#     (expect 15-40 minutes) and only runs on GitHub-hosted Ubuntu runners.
+#   * Current package_check targets Incus (its image remote is
+#     repo.yunohost.org/incus and its URL test binds to the incusbr0 bridge),
+#     so we use Incus rather than LXD.
+#   * The base YunoHost image is pulled from the yunohost: Incus remote, so no
+#     local image build is needed.
 #   * The canonical YunoHost test path is still the official CI you get by
 #     submitting the app to the catalogue; this workflow is an extra, local-ish
 #     safety net for development.
@@ -26,48 +29,31 @@ jobs:
   package_check:
     name: Install / upgrade / backup / restore (package_check)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - name: Check out the package
         uses: actions/checkout@v4.2.2
         with:
           path: updatefromgithub_ynh
 
-      - name: Install dependencies and LXD
+      - name: Install dependencies and Incus
         run: |
           set -eux
           sudo apt-get update
-          # package_check's Python helpers import these third-party modules:
-          #   toml (tests.toml parser), pycurl + bs4 (URL-reachability test).
-          # (imgkit is only used to render a cosmetic summary image and needs a
-          # heavy binary, so it is intentionally omitted; the job gates on the
-          # textual test results instead.)
-          sudo apt-get install -y lynx jq btrfs-progs python3-toml python3-pycurl python3-bs4
-          sudo snap install lxd
-          # snap puts lxc/lxd in /snap/bin, which is not in sudo's secure_path,
-          # so package_check (which calls `sudo lxc ...`) can't find them.
-          # Symlink them where sudo looks, as package_check's README instructs.
-          sudo ln -sf /snap/bin/lxc /usr/local/bin/lxc
-          sudo ln -sf /snap/bin/lxd /usr/local/bin/lxd
-          # Give the runner user access to the LXD socket. The new group is
-          # picked up below with `sg lxd` (a re-login is not possible on CI).
-          sudo usermod -a -G lxd "$USER"
+          # package_check's own deps: lynx, jq, python3, pip3, and its Python
+          # helpers import toml (tests parser) + pycurl & bs4 (URL test).
+          sudo apt-get install -y \
+            lynx jq btrfs-progs python3-pip python3-toml python3-pycurl python3-bs4 incus
+          # Let the runner user drive Incus (picked up below via `sg incus-admin`).
+          sudo usermod -aG incus-admin "$USER"
 
-      - name: Initialise LXD
+      - name: Initialise Incus
         run: |
           set -eux
-          sudo lxd init --auto --storage-backend dir
-          # GitHub-hosted runners ship Docker, whose iptables FORWARD policy is
-          # DROP and blocks the LXD bridge, leaving containers without internet.
-          # Allow forwarding so the test container can reach the network.
+          sudo incus admin init --minimal
+          # GitHub runners ship Docker, whose iptables FORWARD policy is DROP and
+          # blocks the incusbr0 bridge, leaving containers without internet.
           sudo iptables -P FORWARD ACCEPT || true
-
-      - name: Add the YunoHost image remote
-        # Added as the runner user (not root) so package_check, which runs as
-        # that user, finds the remote in its own LXC config.
-        run: |
-          sg lxd -c "lxc remote add yunohost https://repo.yunohost.org/incus \
-            --protocol simplestreams --public" || true
 
       - name: Clone package_check (and adapt it to the runner)
         run: |
@@ -78,22 +64,13 @@ jobs:
           # probe (the app tests themselves are unaffected).
           sed -i 's#|| log_critical "Unable to connect to internet."#|| curl -sfI https://yunohost.org >/dev/null 2>\&1 || curl -sfI https://framasoft.org >/dev/null 2>\&1 || log_critical "Unable to connect to internet."#' package_check/lib/common.sh
 
-      - name: Build the base YunoHost image
-        # package_check needs a local base image (Debian container + YunoHost
-        # installed), built once with --rebuild. This is the slow step: it
-        # downloads a container and runs the full YunoHost install inside it.
-        run: |
-          set -eux
-          cd package_check
-          sg lxd -c "./package_check.sh --rebuild"
-
       - name: Run package_check
         run: |
           set -euo pipefail
           cd package_check
           # package_check always exits 0, even when tests fail, so capture its
           # output and fail the job ourselves if any test reported FAIL.
-          sg lxd -c "./package_check.sh ../updatefromgithub_ynh" 2>&1 | tee run.log
+          sg incus-admin -c "YNHDEV_BACKEND=incus ./package_check.sh ../updatefromgithub_ynh" 2>&1 | tee run.log
           if grep -q -- "--- FAIL ---" run.log; then
             echo "::error::package_check reported at least one failing test (see log above)."
             exit 1
