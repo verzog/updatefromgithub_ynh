@@ -1,0 +1,89 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# INITIALISE AND STORE SETTINGS
+#=================================================
+
+# notify_email comes from the install question; keep it as a setting so the
+# upgrade script and the config regeneration can see it.
+ynh_app_setting_set --key=notify_email --value="$notify_email"
+
+#=================================================
+# DEPLOY THE APP SOURCE
+#=================================================
+ynh_script_progression "Setting up source files..."
+
+# This package carries its own code (there is no separate upstream), so we copy
+# it from the package's own "sources/" folder rather than using ynh_setup_source.
+cp -r ../sources/. "$install_dir/"
+mkdir -p "$install_dir/bin"
+
+chown -R "$app:www-data" "$install_dir"
+
+#=================================================
+# CREATE DATA DIRECTORY AND STORE THE TOKEN
+#=================================================
+ynh_script_progression "Preparing the data directory..."
+
+ufg_init_data_dir
+ufg_store_token "$github_token"
+
+mkdir -p "/var/log/$app"
+chown -R "$app:$app" "/var/log/$app"
+
+#=================================================
+# APP CONFIGURATION (web-facing config.php)
+#=================================================
+ynh_script_progression "Adding $app's configuration..."
+
+# Tells the PHP dashboard where the data dir and the worker are.
+ynh_config_add --template="config.php" --destination="$install_dir/config.php"
+chown "$app:www-data" "$install_dir/config.php"
+chmod 640 "$install_dir/config.php"
+
+# The privileged worker. It must be owned by root and NOT writable by the web
+# user, otherwise the web user could rewrite what runs as root.
+ynh_config_add --template="ufg-worker" --destination="$install_dir/bin/ufg-worker"
+chown root:root "$install_dir/bin" "$install_dir/bin/ufg-worker"
+chmod 755 "$install_dir/bin" "$install_dir/bin/ufg-worker"
+
+#=================================================
+# SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Adding system configurations related to $app..."
+
+ynh_config_add_phpfpm
+
+ynh_config_add_nginx
+
+# sudoers rule letting the web user ($app) call the privileged worker as root.
+ynh_config_add --template="sudoers" --destination="/etc/sudoers.d/$app"
+chown root:root "/etc/sudoers.d/$app"
+chmod 440 "/etc/sudoers.d/$app"
+
+# Hourly background check. The worker itself throttles to the interval set in
+# config.json, so changing the interval from the dashboard needs no root access.
+ynh_config_add --template="cron" --destination="/etc/cron.d/$app"
+chown root:root "/etc/cron.d/$app"
+chmod 644 "/etc/cron.d/$app"
+
+ynh_config_add_logrotate
+
+# NB: we deliberately do NOT run a first check here. This script runs while
+# YunoHost holds its operation lock, and the check calls `yunohost app list`.
+# The dashboard runs the first check itself (via sudo, outside any lock) the
+# first time it is opened.
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Installation of $app completed"

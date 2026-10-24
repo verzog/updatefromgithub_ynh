@@ -1,0 +1,76 @@
+#!/bin/bash
+# Copyright (c) 2026 Vernon Spain. GNU GPL v3 or later.
+
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# ENSURE DOWNWARD COMPATIBILITY
+#=================================================
+ynh_script_progression "Ensuring downward compatibility..."
+
+ynh_app_setting_set_default --key=notify_email --value=true
+
+#=================================================
+# DEPLOY THE APP SOURCE
+#=================================================
+ynh_script_progression "Upgrading source files..."
+
+cp -r ../sources/. "$install_dir/"
+mkdir -p "$install_dir/bin"
+
+chown -R "$app:www-data" "$install_dir"
+
+#=================================================
+# ENSURE THE DATA DIRECTORY LAYOUT EXISTS
+#=================================================
+ynh_script_progression "Checking the data directory..."
+
+# Creates anything missing without overwriting existing apps.json / config.json.
+ufg_init_data_dir
+
+mkdir -p "/var/log/$app"
+chown -R "$app:$app" "/var/log/$app"
+
+#=================================================
+# UPDATE CONFIGURATION
+#=================================================
+ynh_script_progression "Updating $app's configuration..."
+
+ynh_config_add --template="config.php" --destination="$install_dir/config.php"
+chown "$app:www-data" "$install_dir/config.php"
+chmod 640 "$install_dir/config.php"
+
+# Keep the worker root-owned and not writable by the web user (see install).
+ynh_config_add --template="ufg-worker" --destination="$install_dir/bin/ufg-worker"
+chown root:root "$install_dir/bin" "$install_dir/bin/ufg-worker"
+chmod 755 "$install_dir/bin" "$install_dir/bin/ufg-worker"
+
+#=================================================
+# REAPPLY SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Upgrading system configurations related to $app..."
+
+ynh_config_add_phpfpm
+
+ynh_config_add_nginx
+
+ynh_config_add --template="sudoers" --destination="/etc/sudoers.d/$app"
+chown root:root "/etc/sudoers.d/$app"
+chmod 440 "/etc/sudoers.d/$app"
+
+ynh_config_add --template="cron" --destination="/etc/cron.d/$app"
+chown root:root "/etc/cron.d/$app"
+chmod 644 "/etc/cron.d/$app"
+
+ynh_config_add_logrotate
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Upgrade of $app completed"

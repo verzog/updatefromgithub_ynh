@@ -1,0 +1,11 @@
+# Let the dashboard's web user (__APP__) run ONLY the privileged worker as root.
+#
+# Security notes:
+#   * The worker (__INSTALL_DIR__/bin/ufg-worker) is owned by root and is not
+#     writable by __APP__, so the web user cannot alter what runs as root.
+#   * The worker re-validates every argument (subcommand allow-list, app-id
+#     regex, cross-check against the tracked list) before doing anything.
+#   * No password is required because the call comes from an unattended web
+#     process; the trailing "*" allows the worker's own subcommands/arguments.
+Defaults:__APP__ !requiretty
+__APP__ ALL=(root) NOPASSWD: __INSTALL_DIR__/bin/ufg-worker, __INSTALL_DIR__/bin/ufg-worker *
