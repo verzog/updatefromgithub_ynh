@@ -20,7 +20,10 @@ ynh_app_setting_set_default --key=notify_email --value=true
 #=================================================
 ynh_script_progression "Upgrading source files..."
 
-cp -r ../sources/. "$install_dir/"
+# --delete removes files dropped from sources/ between versions, so stale code
+# never lingers in $install_dir. bin/ (root-owned worker) and config.php
+# (generated below) live outside sources/ and are excluded so they survive.
+rsync -a --delete --exclude='/bin/' --exclude='/config.php' ../sources/ "$install_dir/"
 mkdir -p "$install_dir/bin"
 
 chown -R "$app:www-data" "$install_dir"

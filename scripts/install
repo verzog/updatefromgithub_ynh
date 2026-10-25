@@ -23,7 +23,10 @@ ynh_script_progression "Setting up source files..."
 
 # This package carries its own code (there is no separate upstream), so we copy
 # it from the package's own "sources/" folder rather than using ynh_setup_source.
-cp -r ../sources/. "$install_dir/"
+# --delete keeps $install_dir in sync with the shipped sources on upgrade; the
+# root-owned bin/ and the generated config.php live outside sources/ and are
+# excluded so they are never wiped.
+rsync -a --delete --exclude='/bin/' --exclude='/config.php' ../sources/ "$install_dir/"
 mkdir -p "$install_dir/bin"
 
 chown -R "$app:www-data" "$install_dir"
