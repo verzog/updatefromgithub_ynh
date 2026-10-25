@@ -7,7 +7,7 @@ name = "Update from GitHub"
 description.en = "Monitor and update YunoHost apps installed from GitHub that are not in the official catalogue"
 description.fr = "Surveiller et mettre à jour les applications YunoHost installées depuis GitHub et absentes du catalogue officiel"
 
-version = "1.0~ynh4"
+version = "1.0~ynh5"
 
 maintainers = ["verzog"]
 

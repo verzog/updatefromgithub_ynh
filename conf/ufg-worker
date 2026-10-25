@@ -400,12 +400,41 @@ case "$action" in
         ;;
     upgrade)
         # Called by the dashboard: launch the upgrade in the background and return now.
+        #
+        # The dashboard runs under php-fpm. That systemd service may be hardened
+        # with ProtectSystem (which mounts /etc read-only for the service and
+        # every process it spawns). A plain "setsid nohup" child stays inside
+        # php-fpm's mount namespace, so "yunohost app upgrade" then fails writing
+        # /etc/yunohost/apps/<id>/settings.yml ("[Errno 30] Read-only file
+        # system") and usermod cannot lock /etc/passwd -- even though the real
+        # disk is read-write and a root CLI upgrade works fine.
+        #
+        # Launch the worker as a transient systemd unit instead: PID 1 (systemd)
+        # starts it in the host's own namespace, where /etc is writable, which is
+        # the same context a CLI "yunohost app upgrade" runs in. A unique,
+        # self-collecting unit avoids name clashes with a previous run. Keep the
+        # old setsid path as a fallback for hosts without systemd-run (where the
+        # dashboard is not sandboxed anyway).
         require_root
         id="${2:-}"
         valid_appid "$id" || die "Invalid app id"
         appid_is_tracked "$id" || die "App '$id' is not tracked"
         write_job_status "$id" "running"
-        setsid nohup "$SELF" _do_upgrade "$id" >> "$LOG_FILE" 2>&1 < /dev/null &
+        if command -v systemd-run >/dev/null 2>&1; then
+            # --quiet keeps "Running as unit: ..." off stderr so it never leaks
+            # into the JSON the dashboard parses.
+            if ! systemd-run \
+                    --unit="ufg-upgrade-${id}-$(date +%s)" \
+                    --description="Update from GitHub: upgrade ${id}" \
+                    --setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                    --collect --quiet \
+                    -- "$SELF" _do_upgrade "$id"; then
+                log "systemd-run failed for $id; falling back to setsid"
+                setsid nohup "$SELF" _do_upgrade "$id" >> "$LOG_FILE" 2>&1 < /dev/null &
+            fi
+        else
+            setsid nohup "$SELF" _do_upgrade "$id" >> "$LOG_FILE" 2>&1 < /dev/null &
+        fi
         echo '{"status": "started", "id": "'"$id"'"}'
         ;;
     _do_upgrade)
