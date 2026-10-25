@@ -20,6 +20,11 @@ ynh_app_setting_set_default --key=notify_email --value=true
 #=================================================
 ynh_script_progression "Upgrading source files..."
 
+# Drop previously-deployed sources so files removed from sources/ between
+# versions don't linger, while preserving the root-owned bin/ worker and the
+# generated config.php, then copy the current sources in. find+cp is used
+# rather than rsync, which isn't installed in a base YunoHost container.
+find "$install_dir" -mindepth 1 -maxdepth 1 ! -name bin ! -name config.php -exec rm -rf {} +
 cp -r ../sources/. "$install_dir/"
 mkdir -p "$install_dir/bin"
 

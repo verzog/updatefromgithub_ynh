@@ -23,6 +23,11 @@ ynh_script_progression "Setting up source files..."
 
 # This package carries its own code (there is no separate upstream), so we copy
 # it from the package's own "sources/" folder rather than using ynh_setup_source.
+# Drop anything previously deployed first (so files removed from sources/ between
+# versions don't linger) while preserving the root-owned bin/ worker and the
+# generated config.php, then copy the current sources in. find+cp is used rather
+# than rsync, which isn't installed in a base YunoHost container.
+find "$install_dir" -mindepth 1 -maxdepth 1 ! -name bin ! -name config.php -exec rm -rf {} +
 cp -r ../sources/. "$install_dir/"
 mkdir -p "$install_dir/bin"
 
