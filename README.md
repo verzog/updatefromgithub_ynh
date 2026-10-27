@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Update from GitHub logo" width="128" height="128">
+</p>
+
 # Update from GitHub for YunoHost
 
 [![Install with YunoHost](https://install-app.yunohost.org/install-with-yunohost.svg)](https://install-app.yunohost.org/?app=updatefromgithub)
