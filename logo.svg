@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f8cf7"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#0b1b45" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Tile -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="240" rx="112" fill="url(#sheen)"/>
+
+  <!-- Update / sync arrows -->
+  <g fill="none" stroke="#ffffff" stroke-width="40" stroke-linecap="round" filter="url(#shadow)">
+    <path d="M 144.7 211.0 A 120 120 0 0 1 362.0 199.7"/>
+    <path d="M 367.3 301.0 A 120 120 0 0 1 150.0 312.3"/>
+  </g>
+  <g fill="#ffffff" filter="url(#shadow)">
+    <polygon points="382.1,237.6 302.9,182.4 380.6,141.0"/>
+    <polygon points="129.9,274.4 209.1,329.6 131.4,371.0"/>
+  </g>
+
+  <!-- Git commit node in the centre -->
+  <circle cx="256" cy="256" r="34" fill="#ffffff" filter="url(#shadow)"/>
+  <circle cx="256" cy="256" r="16" fill="#1e3a8a"/>
+</svg>
